@@ -12,16 +12,23 @@ startReverse               db  "Start reverse output", '$'
 badCMDArgsMessage          db  "Bad command-line arguments.", '$'
 badSourceText	           db  "Open error", '$'    
 fileNotFoundText           db  "No such file", '$'
+FileIs			   db  "File already exists"
 endText 	               db  0Dh,0Ah,"Program is ended", '$'
 errorReadSourceText        db  "Error reading from file", '$'
 errorClosingSource         db  "Cannot close file", '$'
 emptyFileMsg               db  "File is empty", '$'
 
-destinationPath            db 'output.txt', 0
+destinationPath            db 'output.txt', 0h
+
+destinationPath2           db 'output.txt', 0h
+
+destinationPlate           db "output.txt" , '$'
 extension	           db "txt"	     
 point2		           db '.'
-buf		           db 1024 dup(?)
-		 
+buf		           db 1025 dup(?)
+	
+sourceLen db , 0
+destLen db , 0	 
 sourceID	           dw  0
 destinationID              dw  0	
 
@@ -32,15 +39,14 @@ array_positions            dw  max_length dup (?)
 
 cmd_len	               	   db  ?
 
-sourcePath	           db  129 dup (?) 
-tempSourcePath	           db  129 dup (?)					
+sourcePath	           db  129 dup (0) 
+tempSourcePath	           db  129 dup (0)					
 
 
 cmd_text	           db  129 dup(0)	
 		   
 three equ 3
 
-whole_pos 			dd 0
 check_last 			db 0
 forLoop    			dw 0
 temp_size  			dw 0
@@ -75,6 +81,28 @@ printString macro info	    ;вывод на экран заданной стро
 	pop ax			
 endm
 
+fseek macro ID   ; перемещение курсора(позиции) в файле 
+	push ax 		    
+	push bx 		    
+	push cx 		    
+	push dx 		                  ; Сохраняем значения регистров
+				
+	mov ah, 42h		                  ; Записываем в ah код 42h - ф-ция DOS уставноки указателя файла 
+	mov bx, ID                        ; Дескриптор файла
+	xor al ,al				  
+	mov al, 01h	              ; al - с начала, с конца или с текущей позиции
+	mov cx, 1
+	neg cx		                  ; Обнуляем cx
+	mov dx, size_ 	
+	neg dx	          ; Обнуляем dx, т.е премещаем указатель на 0 символов от начала файла (cx*2^16)+dx 
+	int 21h 		                  ; Вызываем прерывания DOS для исполнения кодманды	
+				
+	pop dx			                  ; Восстанавливаем значения регистров и выходим из процедуры
+	pop cx			   
+	pop bx			    
+	pop ax			    
+endm
+
 strcpy macro destination, source, count   ; Макрос, предназначенный для копирования из source в destination заданное количество символов
     push cx
     push di
@@ -96,7 +124,7 @@ endm
 
 main proc
 	    mov ax, @data		    ; Загружаем данные
-	    mov es, ax		
+	    mov es, ax	
 			    
 	    xor ch, ch	
 	    mov cl, ds:[80h]		; Количество символов строки, переданной через командную строку
@@ -107,7 +135,7 @@ main proc
 	    lea di, tempSourcePath	      
 	
 	    rep movsb		        ; Записать в ячейку адресом ES:DI байт из ячейки DS:SI
-	
+		
 	    mov ds, ax		        ; Загружаем в ds данные  
 	    mov cmd_len, bl	
 	
@@ -130,14 +158,19 @@ main proc
 
 	    	
 	    call workWithFile  
-             
-			 
-	    printString endText
-	    call closeFiles 	
-	    cmp ax, 0		
-	
-	endMain:
-	
+            printString endText
+             			
+	   
+    mov ah, 3Eh
+    mov bx, sourceID
+    int 21h
+
+    mov ah, 3Eh
+    mov bx, destinationID
+    int 21h
+		
+    endMain:
+
 	    mov ah, 4Ch		
 	    int 21h      
 		   
@@ -161,6 +194,7 @@ begin:
 checkEnd:
 
 ;проверяем, если достигнут конец файла или если строка длиной 1024
+
 	cmp check_last , 1
 	je set	
 	
@@ -202,9 +236,11 @@ writeToFile:
 	mov ah , 02h
 	int 21h
 
+	fseek sourceID
+	
 	lea dx , buf
 	mov ah , 40h
-        mov bx , destinationID
+        mov bx , sourceID
 	xor cx, cx
         mov cx , size_
 	int 21h
@@ -264,7 +300,7 @@ get_length:
 	je set_size
 	inc di			      
 	
-	cmp di , 1024
+	cmp di , 1025
 	je isLast  ; если количество символов в строке максимально - тогда устанавливаем соответств. размер
 	jmp get_length
 	
@@ -357,7 +393,19 @@ processCMD proc
     
         cmp cmd_len, 0		        ; Если параметр не был передан, то переходим в notFound 
         je notFound
-    
+        cmp cmd_len , 10
+        jne ok
+
+xor di , di
+
+ok:
+  	xor ax, ax
+        xor cx, cx
+
+  	mov cl, cmd_len
+    	lea di, cmd_text   ; устанавливаем на смещение cmd_text di
+	
+	
         mov cl, cmd_len
     
         lea di, cmd_text   ; устанавливаем на смещение cmd_text di
@@ -396,42 +444,29 @@ processCMD proc
     
         strcpy sourcePath, cmd_text, cmd_len
         mov error, 0
-
     ret 	
+
 processCMD endp 
 
-openFiles proc
-		     
+
+openFiles proc		     
 	    push bx 		    
 	    push dx 			       
 	    push si 				    
-			
-	 
-	    mov ah, 3Dh		; Функция 3Dh - открыть существующий файл
-	    mov al, 02h		; режим доступа и чтение, и запись		       
-	    lea dx, sourcePath	   ;в dx путь исходного файла 
-	    int 21h 
-		    
-	;   проверяем cx , если он равен единице , то jb сработает
-	      
-	    jb badSource	 ; Если файл не открылся, то прыгаем в badSource
-			      
-	    mov sourceID, ax  ; Загружаем в sourceId значение из ax, полученное при открытии файла
-
-	
-	    mov ah, 3Dh				      
-	    mov al, 02h				  ; открытие и для чтения, и для записи    
-	    lea dx, destinationPath	        ; Загружаем в dx название выходного файла 
+				 
+	    mov ah, 3Dh				        ; Функция 3Dh - открыть существующий файл
+	    mov al, 02h				        ; 100 - запрещений нет
+	    lea dx, sourcePath	            ; Загружаем в dx название исходного файла 
 	    int 21h 		    
-	
-	    jb badSource 
-	
-	    mov destinationID, ax
+			      
+	    jb badOpenSource		        ; Если файл не открылся, то прыгаем в badOpenSource
+			      
+	    mov sourceID, ax		        ; Загружаем в sourceId значение из ax, полученное при открытии файла
 	     
-	    mov error, 0				        ; Загружаем в error 0, т.е. ошибок во время выполнения процедуры не произшло    
+	    mov error, 0				        ; Загружаем в ax 0, т.е. ошибок во время выполнения процедуры не произшло    
 	    jmp endOpenProc 		        ; Прыгаем в endOpenProc и корректно выходим из процедуры
-				
-    badSource:		    
+			
+badOpenSource:		    
 	    printString badSourceText	        ; Выводим соответсвующее сообщение
 	
 	    cmp ax, 02h		                ; Сравниваем ax с 02h
@@ -449,7 +484,7 @@ openFiles proc
 	    pop dx							   
 	    pop bx			
 	ret			
-openFiles endp		
+endp				
 
 closeFiles proc 		
 	    push bx 		    
@@ -460,21 +495,18 @@ closeFiles proc
 	    mov ah, 3Eh		                     ; Загружаем в ah код 3Eh - код закрытия файла
 	    mov bx, sourceID	                   ; В bx загружаем ID файла, подлежащего закрытию
 	    int 21h 		                     ; Выпоняем прерывание для выполнения 
-				
+			 		                     ; Выпоняем прерывание для выполнения 
+			
 	    jnb goodCloseOfSource		         ; Если ошибок при закрытии не произошло, прыгаем в goodCloseOfSource
 				
 	    printString errorClosingSource           ; Иначе выводим соответсвующее сообщение об ошибке	     
 				  
 	    inc cx				  
 			
-    goodCloseOfSource:		
+goodCloseOfSource:		
 	    mov error, cx			      ; Записываем в ax значение из cx, если ошибок не произошло, то это будет 0, иначе 1 или 2, в зависимости от
 				                     ; количества незакрывшихся файлов
 	    pop cx			    
 	    pop bx			                ; Восстанавливаем значения регистров и выходим из процедуры
 	ret	
 closeFiles endp	
-	    
-main endp 
-
-end main
